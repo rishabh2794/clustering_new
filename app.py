@@ -1,3 +1,4 @@
+
 # app.py — Clustering + Batch Navigation + Skip/Mark + Clickable Image Popups
 # ----------------------------------------------------------------------------
 
@@ -367,31 +368,33 @@ else:
         st.markdown(f"[🧭 Open route in Google Maps for this batch]({nav_url})")
 
     # Actions
+    # Actions
     c1, c2, c3, c4 = st.columns(4)
-    first_id = str(batch_df.iloc[0]['ISSUE ID']) if len(batch_df) else None
+    # Get the ID of the first item in the current batch, if the batch is not empty.
+    first_id = str(batch_df.iloc[0]['ISSUE ID']) if not batch_df.empty else None
 
     with c1:
         if st.button("✅ Mark first as Visited", key="btn_mark_first"):
             if first_id:
                 st.session_state.visited_ticket_ids.add(first_id)
-                st.experimental_rerun()
+                # The st.experimental_rerun() line is removed. Streamlit reruns automatically.
 
     with c2:
         if st.button("⏭️ Skip first", key="btn_skip_first"):
             if first_id:
                 st.session_state.skipped_ticket_ids.add(first_id)
-                st.experimental_rerun()
+                # The st.experimental_rerun() line is removed.
 
     with c3:
         if st.button("✅ Mark entire batch as Visited", key="btn_mark_batch"):
             for _id in batch_df['ISSUE ID'].astype(str).tolist():
                 st.session_state.visited_ticket_ids.add(_id)
-            st.experimental_rerun()
+            # The st.experimental_rerun() line is removed.
 
     with c4:
         if st.button("➡️ Next batch", key="btn_next_batch"):
             st.session_state.batch_cursor = end if end < len(seq_df) else 0
-            st.experimental_rerun()
+            # The st.experimental_rerun() line is removed.
 
 # ---------------- Map (+ clickable image links / thumbnails) ----------------
 st.subheader("Step 6: Map")
