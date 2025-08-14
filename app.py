@@ -1,17 +1,13 @@
 # Unified Clustering + Batch Navigation with Auto Geolocation (app.py)
 # -------------------------------------------------------------------
-# What this app does
-# - Ingests a CSV of issue/ticket points (lat/lon, status, photos, etc.)
-# - Clusters them with DBSCAN (haversine distance)
-# - (Optional) Spatially joins to ward boundaries (GeoJSON/JSON/KML)
-# - Builds a continuous Google Maps route to the next N tickets (nearest-neighbor, default 10)
-# - Shows a Folium map of ALL filtered tickets and highlights the batch (first = green, rest = orange)
-# - Exports: Excel summary of clustered points + HTML map
-# - Auto-detects your location via browser geolocation (with manual fallback)
-#
-# How to run:
-#   pip install streamlit pandas numpy geopandas scikit-learn shapely folium openpyxl fiona streamlit-geolocation
-#   streamlit run app.py
+# Features:
+# - Upload CSV of tickets (required) and ward boundary (GeoJSON/JSON/KML, optional)
+# - DBSCAN clustering (haversine)
+# - Ward spatial join (optional)
+# - Auto-location via browser (with manual fallback)
+# - Build Google Maps route to next N tickets (nearest-neighbor; default 10)
+# - Map shows ALL tickets; batch highlighted (first = green, rest = orange)
+# - Downloads: Excel summary (clustered points) + HTML Folium map
 
 import math
 import tempfile
@@ -29,7 +25,8 @@ from openpyxl import load_workbook
 
 # Auto geolocation (browser)
 try:
-    from streamlit_geolocation import st_geolocation
+    # pip install streamlit-geolocation
+    from streamlit_geolocation import geolocation
     HAVE_GEO = True
 except Exception:
     HAVE_GEO = False
@@ -50,16 +47,16 @@ REQUIRED_COLS = {
     'STATUS', 'LATITUDE', 'LONGITUDE', 'BEFORE PHOTO', 'AFTER PHOTO', 'ADDRESS'
 }
 
-st.set_page_config(layout="wide")
-st.title("Unified Clustering + Batch Navigation — Hotspots + Route to Next N Tickets")
+st.set_page_config(layout="wide", page_title="Clustering + Batch Navigation")
+st.title("🗺️ Clustering + Batch Navigation (Auto-Location)")
 
 with st.sidebar:
     st.markdown("### Tips")
     st.markdown(
-        "- CSV must include LATITUDE/LONGITUDE in decimal degrees.\n"
-        "- Clustering radius is in **meters** (converted to **radians** for haversine).\n"
-        "- If KML ward reading fails, convert to GeoJSON and try again.\n"
-        "- Auto location requires allowing the browser's location permission."
+        "- CSV must include **LATITUDE/LONGITUDE** (decimal degrees).  \n"
+        "- Clustering **radius** is in meters (converted to radians).  \n"
+        "- If KML ward reading fails, convert it to GeoJSON.  \n"
+        "- Auto-location needs **HTTPS** + allow location in browser."
     )
 
 subcategory_options = [
@@ -81,7 +78,6 @@ subcategory_options = [
 # -------------------------
 # Utility functions
 # -------------------------
-
 def normalize_subcategory(series: pd.Series) -> pd.Series:
     return series.astype(str).str.strip().str.lower()
 
@@ -310,14 +306,15 @@ if csv_file:
         colA, colB = st.columns(2)
         with colA:
             if HAVE_GEO:
-                st.caption("Click to fetch your location (allow browser permission).")
-                loc = st_geolocation()
+                st.caption("Tap the button below and allow location in the browser.")
+                loc = geolocation()
                 if loc and isinstance(loc, dict) and loc.get("latitude") and loc.get("longitude"):
-                    origin_lat = float(loc["latitude"])  # auto
+                    origin_lat = float(loc["latitude"])   # auto
                     origin_lon = float(loc["longitude"])  # auto
                     st.success(f"Auto location: {origin_lat:.6f}, {origin_lon:.6f}")
             else:
                 st.info("Auto geolocation component not installed. Run: pip install streamlit-geolocation")
+                st.caption("Tip: After installing, restart the app. If no prompt, check browser Location permissions.")
         with colB:
             manual_lat = st.text_input("Manual latitude (fallback)", value="")
             manual_lon = st.text_input("Manual longitude (fallback)", value="")
@@ -395,11 +392,11 @@ if csv_file:
             with c1:
                 if st.button("✅ Mark first as Done (visited)"):
                     st.session_state.visited_ticket_ids.add(str(sequence_rows[0]['ISSUE ID']))
-                    st.experimental_rerun()
+                    st.rerun()
             with c2:
                 if st.button("⏭️ Skip first ticket"):
                     st.session_state.skipped_ticket_ids.add(str(sequence_rows[0]['ISSUE ID']))
-                    st.experimental_rerun()
+                    st.rerun()
         else:
             st.info("Provide your location to compute a batch route.")
 
@@ -407,22 +404,24 @@ if csv_file:
         # Step 5 — Map Display (ALL filtered points, batch highlighted)
         # -------------------------
         st.subheader("Step 5: Map Display Options")
-        st.write(f"**Total clusters found (non-noise)**: {df[df['CLUSTER NUMBER']!=-1]['CLUSTER NUMBER'].nunique()}")
-        center_on_first = st.checkbox("Center map on first stop (if any)", value=False)
+        clusters_found = df[df['CLUSTER NUMBER'] != -1]['CLUSTER NUMBER'].nunique()
+        st.write(f"**Total clusters found (non-noise)**: {clusters_found}")
+        if clusters_found > 100:
+            st.info("We recommend **Dynamic Clustering (Type 2 Map)** for maps with more than 100 clusters.")
 
         map_type = st.radio(
             "Select map type:",
             [
-                "Show all markers (Type 1)",
-                "Use Dynamic Clustering (Type 2)"
+                "Show all cluster markers (Type 1 Map)",
+                "Use Dynamic Clustering (Type 2 Map)"
             ],
-            index=0
+            index=1 if clusters_found > 100 else 0
         )
 
         # Map center
-        if center_on_first and sequence_rows:
+        if sequence_rows:
             map_center = [float(sequence_rows[0]['LATITUDE']), float(sequence_rows[0]['LONGITUDE'])]
-            zoom_level = 16
+            zoom_level = 15
         else:
             map_center = [float(df['LATITUDE'].mean()), float(df['LONGITUDE'].mean())]
             zoom_level = 13
@@ -439,7 +438,7 @@ if csv_file:
         target_id = st.session_state.get('current_target_id')
         batch_ids = st.session_state.get('batch_target_ids', set())
 
-        if map_type == "Show all markers (Type 1)":
+        if map_type == "Show all cluster markers (Type 1 Map)":
             for _, row in gdf_all.iterrows():
                 rid = str(row['ISSUE ID'])
                 is_first = (rid == str(target_id)) if target_id else False
@@ -501,5 +500,6 @@ if csv_file:
         st.error(f"Error: {e}")
 else:
     st.info("Upload the required CSV file to proceed.")
+
 
 
