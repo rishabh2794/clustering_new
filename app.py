@@ -32,10 +32,6 @@ except Exception:
 
 # ----------------- Constants -----------------
 EARTH_RADIUS_M = 6_371_000.0
-REQUIRED_COLS = {
-    'ISSUE ID', 'CITY', 'ZONE', 'WARD', 'SUBCATEGORY', 'CREATED AT',
-    'STATUS', 'LATITUDE', 'LONGITUDE', 'BEFORE PHOTO', 'AFTER PHOTO', 'ADDRESS'
-}
 
 # ----------------- Helpers -----------------
 def normalize_subcategory(series: pd.Series):
@@ -66,10 +62,10 @@ def hyperlinkify_excel(excel_path):
         wb = load_workbook(excel_path)
         ws = wb["Clustering Application Summary"]
         for row in range(2, ws.max_row + 1):
-            for col in (11, 12):  # BEFORE/AFTER PHOTO columns
-                link = ws.cell(row, col).value
-                if link and isinstance(link, str) and link.startswith(("http://", "https://")):
-                    ws.cell(row, col).hyperlink = link
+            for col in range(1, ws.max_column + 1):
+                cell_val = str(ws.cell(row, col).value or "")
+                if cell_val.startswith(("http://", "https://")):
+                    ws.cell(row, col).hyperlink = cell_val
                     ws.cell(row, col).style = "Hyperlink"
         wb.save(excel_path)
     except Exception:
@@ -166,17 +162,6 @@ if "origin_lon" not in st.session_state:
 csv_file = st.file_uploader("Upload CSV", type=["csv"], key="csv_uploader_main")
 ward_file = st.file_uploader("Upload Wards file (optional)", type=["geojson", "json", "kml"], key="ward_uploader_main")
 
-subcategory_option = st.selectbox(
-    "Issue Subcategory",
-    [
-        "Pothole", "Garbage dumped on public land", "Unpaved Road", "Broken Footpath / Divider",
-        "Sand piled on roadsides + Mud/slit on roadside", "Malba, bricks, bori, etc dumped on public land",
-        "Construction/ demolition activity without safeguards", "Encroachment-Building Materials Dumped on Road",
-        "Burning of garbage, plastic, leaves, branches etc.", "Overflowing Dustbins",
-        "Barren land to be greened", "Greening of Central Verges", "Unsurfaced Parking Lots"
-    ],
-    key="sel_subcategory"
-)
 radius_m = st.number_input("Clustering radius (m)", 1, 1000, 15, key="num_radius")
 min_samples = st.number_input("Minimum per cluster", 1, 100, 2, key="num_min_samples")
 
@@ -186,13 +171,52 @@ if not csv_file:
     st.stop()
 
 df = pd.read_csv(csv_file)
-missing = list(REQUIRED_COLS - set(df.columns))
-if missing:
-    st.error(f"Missing required columns: {missing}")
-    st.stop()
+
+# --- Dynamic Column Mapping for GVP Gaya.csv & Standard Formats ---
+col_mapping = {}
+for col in df.columns:
+    c_lower = col.strip().lower()
+    if c_lower in ['issue id', 'project id', 'ticket id', 'id']:
+        col_mapping[col] = 'ISSUE ID'
+    elif c_lower in ['subcategory', 'action item', 'category', 'issue']:
+        col_mapping[col] = 'SUBCATEGORY'
+    elif c_lower in ['zone']:
+        col_mapping[col] = 'ZONE'
+    elif c_lower in ['city']:
+        col_mapping[col] = 'CITY'
+    elif c_lower in ['ward']:
+        col_mapping[col] = 'WARD'
+    elif c_lower in ['status']:
+        col_mapping[col] = 'STATUS'
+    elif c_lower in ['latitude', 'lat']:
+        col_mapping[col] = 'LATITUDE'
+    elif c_lower in ['longitude', 'long', 'lng']:
+        col_mapping[col] = 'LONGITUDE'
+    elif c_lower in ['before photo', 'raised evidence', 'photo', 'image', 'evidence']:
+        col_mapping[col] = 'BEFORE PHOTO'
+    elif c_lower in ['after photo', 'closed evidence']:
+        col_mapping[col] = 'AFTER PHOTO'
+    elif c_lower in ['address', 'landmark*', 'landmark', 'location']:
+        col_mapping[col] = 'ADDRESS'
+    elif c_lower in ['created at', 'raised on', 'date']:
+        col_mapping[col] = 'CREATED AT'
+
+df = df.rename(columns=col_mapping)
+
+# Ensure fallback columns if missing
+for req in ['ISSUE ID', 'CITY', 'ZONE', 'WARD', 'SUBCATEGORY', 'CREATED AT', 'STATUS', 'LATITUDE', 'LONGITUDE', 'BEFORE PHOTO', 'AFTER PHOTO', 'ADDRESS']:
+    if req not in df.columns:
+        df[req] = 'N/A'
+
+# Populate dynamic subcategories from data
+available_subcats = df['SUBCATEGORY'].dropna().unique().tolist()
+if not available_subcats:
+    available_subcats = ["Pothole", "Garbage dumped on public land"]
+
+subcategory_option = st.selectbox("Issue Subcategory", available_subcats, key="sel_subcategory")
 
 df['SUBCATEGORY_NORM'] = normalize_subcategory(df['SUBCATEGORY'])
-df = df[df['SUBCATEGORY_NORM'] == subcategory_option.lower()].copy()
+df = df[df['SUBCATEGORY_NORM'] == str(subcategory_option).strip().lower()].copy()
 
 df['LATITUDE'] = pd.to_numeric(df['LATITUDE'], errors='coerce')
 df['LONGITUDE'] = pd.to_numeric(df['LONGITUDE'], errors='coerce')
@@ -266,13 +290,12 @@ with colB:
             st.success(f"Manual start set: {st.session_state.origin_lat:.6f}, {st.session_state.origin_lon:.6f}")
             st.rerun()
         except Exception:
-            st.error("Invalid coordinates. Example: 26.8467, 80.9462")
+            st.error("Invalid coordinates. Example: 24.7938, 85.0243")
 
 st.caption("🗺️ Or click anywhere on the mini map to set your starting point:")
 center_lat = float(df['LATITUDE'].mean())
 center_lon = float(df['LONGITUDE'].mean())
 
-# Explicit tile setting to avoid policy errors
 mini = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="OpenStreetMap")
 if st.session_state.origin_lat is not None and st.session_state.origin_lon is not None:
     folium.Marker(
@@ -372,7 +395,6 @@ st.subheader("Step 6: Map")
 
 show_thumbs = st.checkbox("Show image thumbnails in popups (may slow the map)", value=False, key="cb_thumbs")
 
-# Create map with open tiles
 m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="OpenStreetMap")
 mc = MarkerCluster(name="Tickets").add_to(m)
 
@@ -416,15 +438,10 @@ for _, row in plot_df.iterrows():
     if cluster != '':
         parts.insert(0, f"<b>Cluster:</b> {cluster}")
 
-    # Add referrerpolicy to image tags to prevent policy blocking
     if is_url(before_url):
-        parts.append(f"<a href='{before_url}' target='_blank' rel='noopener noreferrer'>Before photo</a>")
+        parts.append(f"<a href='{before_url}' target='_blank' rel='noopener noreferrer'>Evidence photo</a>")
         if show_thumbs:
             parts.append(f"<div><img src='{before_url}' loading='lazy' referrerpolicy='no-referrer' style='max-width:220px;border:1px solid #ccc;border-radius:6px;'/></div>")
-    if is_url(after_url):
-        parts.append(f"<a href='{after_url}' target='_blank' rel='noopener noreferrer'>After photo</a>")
-        if show_thumbs:
-            parts.append(f"<div><img src='{after_url}' loading='lazy' referrerpolicy='no-referrer' style='max-width:220px;border:1px solid #ccc;border-radius:6px;'/></div>")
 
     popup_html = "<div style='font-size:13px;line-height:1.25'>" + "<br>".join(parts) + "</div>"
     popup = folium.Popup(popup_html, max_width=280)
@@ -439,10 +456,7 @@ for _, row in plot_df.iterrows():
         popup=popup
     ).add_to(mc)
 
-# Display interactive map directly inside Streamlit
 st_folium(m, width="100%", height=500, key="main_map_render")
-
-# Save file locally for user download button
 m.save("Clustering_Application_Map.html")
 
 # ---------------- Step 7: Downloads ----------------
