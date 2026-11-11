@@ -172,7 +172,7 @@ if not csv_file:
 
 df = pd.read_csv(csv_file)
 
-# --- Dynamic Column Mapping for GVP Gaya.csv & Standard Formats ---
+# --- Dynamic Column Mapping ---
 col_mapping = {}
 for col in df.columns:
     c_lower = col.strip().lower()
@@ -240,26 +240,28 @@ except ValueError as e:
 df['CLUSTER NUMBER'] = labels
 df['IS_CLUSTERED'] = df['CLUSTER NUMBER'] != -1
 
-# Optional GeoPandas overlay
+# Optional GeoPandas overlay & Ward Matching
+wards_gdf = load_wards_uploaded(ward_file) if ward_file else None
 if HAVE_GPD:
     gdf_all = gpd.GeoDataFrame(df.copy(), geometry=gpd.points_from_xy(df['LONGITUDE'], df['LATITUDE']), crs="EPSG:4326")
-    wards_gdf = load_wards_uploaded(ward_file) if ward_file else None
     if wards_gdf is not None and not wards_gdf.empty:
         try:
             gdf_all = gpd.sjoin(gdf_all, wards_gdf, how="left", predicate="within")
-        except Exception:
-            pass
+            # Update WARD column from KML layer metadata if available
+            ward_col_candidates = [c for c in ['WRD_NAME', 'WRD_NO', 'name', 'Name', 'ward', 'Ward'] if c in gdf_all.columns]
+            if ward_col_candidates:
+                matched_ward = gdf_all[ward_col_candidates[0]].fillna('')
+                gdf_all['WARD'] = np.where(matched_ward != '', matched_ward, gdf_all['WARD'])
+        except Exception as ex:
+            st.warning(f"Ward join warning: {ex}")
 else:
     gdf_all = df.copy()
 
-# Excel summary generation
-clustered = gdf_all[gdf_all['IS_CLUSTERED']]
+# Excel summary generation (FIX: Generate Excel even if no clusters found)
 excel_filename = "Clustering_Application_Summary.xlsx"
-if not clustered.empty:
-    (clustered.drop(columns=["geometry"]) if "geometry" in clustered.columns else clustered).to_excel(
-        excel_filename, sheet_name='Clustering Application Summary', index=False
-    )
-    hyperlinkify_excel(excel_filename)
+export_df = gdf_all.drop(columns=["geometry"], errors="ignore")
+export_df.to_excel(excel_filename, sheet_name='Clustering Application Summary', index=False)
+hyperlinkify_excel(excel_filename)
 
 # ---------------- Step 4: Start Point ----------------
 st.subheader("Step 4: Set Start Point (No GPS Needed)")
@@ -294,13 +296,22 @@ st.caption("🗺️ Or click anywhere on the mini map to set your starting point
 center_lat = float(df['LATITUDE'].mean())
 center_lon = float(df['LONGITUDE'].mean())
 
-# Using Esri World Street Map (free, robust, no 403 blocks)
+# Using Esri World Street Map
 mini = folium.Map(
     location=[center_lat, center_lon], 
     zoom_start=12, 
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
-    attr="Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, Intermap, IPC, NRCAN, Esri Japan, METI, Esri China (Hong Kong), and the GIS User Community"
+    attr="Tiles &copy; Esri"
 )
+
+# Render Ward Boundary on Mini Map if available
+if wards_gdf is not None and not wards_gdf.empty:
+    folium.GeoJson(
+        wards_gdf,
+        name="Wards Boundary",
+        style_function=lambda x: {'fillColor': '#3388ff', 'color': '#0000ff', 'weight': 1.5, 'fillOpacity': 0.1}
+    ).add_to(mini)
+
 if st.session_state.origin_lat is not None and st.session_state.origin_lon is not None:
     folium.Marker(
         [st.session_state.origin_lat, st.session_state.origin_lon],
@@ -327,7 +338,7 @@ else:
 # ---------------- Step 5: Batch Navigation ----------------
 st.subheader("Step 5: Batches of 10 — View • Skip • Mark")
 
-pool = (gdf_all.drop(columns=["geometry"]) if "geometry" in getattr(gdf_all, "columns", []) else gdf_all).copy()
+pool = (gdf_all.drop(columns=["geometry"], errors="ignore")).copy()
 pool = pool[~pool['ISSUE ID'].astype(str).isin(st.session_state.visited_ticket_ids)]
 pool = pool[~pool['ISSUE ID'].astype(str).isin(st.session_state.skipped_ticket_ids)]
 
@@ -403,11 +414,21 @@ m = folium.Map(
     location=[center_lat, center_lon], 
     zoom_start=12, 
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
-    attr="Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, Intermap, IPC, NRCAN, Esri Japan, METI, Esri China (Hong Kong), and the GIS User Community"
+    attr="Tiles &copy; Esri"
 )
+
+# Render Ward Boundary Polygons on the Main Map
+if wards_gdf is not None and not wards_gdf.empty:
+    folium.GeoJson(
+        wards_gdf,
+        name="Wards Boundary",
+        style_function=lambda x: {'fillColor': '#ff7800', 'color': '#ff0000', 'weight': 2, 'fillOpacity': 0.15},
+        tooltip=folium.GeoJsonTooltip(fields=[c for c in wards_gdf.columns if c != 'geometry'][:3])
+    ).add_to(m)
+
 mc = MarkerCluster(name="Tickets").add_to(m)
 
-plot_df = (gdf_all.drop(columns=["geometry"]) if "geometry" in getattr(gdf_all, "columns", []) else gdf_all).copy()
+plot_df = (gdf_all.drop(columns=["geometry"], errors="ignore")).copy()
 
 batch_ids = set(batch_df['ISSUE ID'].astype(str).tolist()) if not batch_df.empty else set()
 first_in_batch = str(batch_df.iloc[0]['ISSUE ID']) if not batch_df.empty else None
@@ -465,14 +486,16 @@ for _, row in plot_df.iterrows():
         popup=popup
     ).add_to(mc)
 
+folium.LayerControl().add_to(m)
 st_folium(m, width="100%", height=500, key="main_map_render")
 m.save("Clustering_Application_Map.html")
 
 # ---------------- Step 7: Downloads ----------------
 st.subheader("Step 7: Downloads")
-if not clustered.empty:
-    with open("Clustering_Application_Summary.xlsx", "rb") as f:
-        st.download_button("Download Excel", f, file_name="Clustering_Application_Summary.xlsx", key="dl_excel")
+
+# FIX: Excel download button is now always available
+with open("Clustering_Application_Summary.xlsx", "rb") as f:
+    st.download_button("Download Excel", f, file_name="Clustering_Application_Summary.xlsx", key="dl_excel")
 
 with open("Clustering_Application_Map.html", "rb") as f:
     st.download_button("Download Map (HTML)", f, file_name="Clustering_Application_Map.html", mime="text/html", key="dl_html")
