@@ -1,3 +1,10 @@
+Ah, CartoDB now requires an API key or explicit attribution for their positron tiles, which is why it's displaying the watermark text **"API KEY REQUIRED"** across the map.
+
+To fix this completely without requiring any API keys, sign-ups, or watermarks, we can use **Stamen / Stadia Toner** or **Esri World Street Map** / **Esri World Topo Map** which are completely free and open for applications.
+
+Here is the updated script using **Esri World Street Map**, which renders clean map tiles without watermarks or API keys:
+
+```python
 # app.py — Clustering + Batch Navigation + Skip/Mark + Clickable Image Popups
 # with Map-Click Start & Address Search (no GPS/IP needed)
 # ----------------------------------------------------------------------------
@@ -294,8 +301,13 @@ st.caption("🗺️ Or click anywhere on the mini map to set your starting point
 center_lat = float(df['LATITUDE'].mean())
 center_lon = float(df['LONGITUDE'].mean())
 
-# Using CartoDB positron tiles to avoid 403 blocks
-mini = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="CartoDB positron")
+# Using Esri World Street Map tiles (completely free, no API key required)
+mini = folium.Map(
+    location=[center_lat, center_lon], 
+    zoom_start=12, 
+    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+    attr="Tiles &copy; Esri"
+)
 if st.session_state.origin_lat is not None and st.session_state.origin_lon is not None:
     folium.Marker(
         [st.session_state.origin_lat, st.session_state.origin_lon],
@@ -394,8 +406,13 @@ st.subheader("Step 6: Map")
 
 show_thumbs = st.checkbox("Show image thumbnails in popups (may slow the map)", value=False, key="cb_thumbs")
 
-# Using CartoDB positron tiles here as well
-m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="CartoDB positron")
+# Using Esri World Street Map tiles here as well
+m = folium.Map(
+    location=[center_lat, center_lon], 
+    zoom_start=12, 
+    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+    attr="Tiles &copy; Esri"
+)
 mc = MarkerCluster(name="Tickets").add_to(m)
 
 plot_df = (gdf_all.drop(columns=["geometry"]) if "geometry" in getattr(gdf_all, "columns", []) else gdf_all).copy()
@@ -467,3 +484,5 @@ if not clustered.empty:
 
 with open("Clustering_Application_Map.html", "rb") as f:
     st.download_button("Download Map (HTML)", f, file_name="Clustering_Application_Map.html", mime="text/html", key="dl_html")
+
+```
