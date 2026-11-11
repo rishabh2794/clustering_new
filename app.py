@@ -1,14 +1,3 @@
-Ah, CartoDB now requires an API key or explicit attribution for their positron tiles, which is why it's displaying the watermark text **"API KEY REQUIRED"** across the map.
-
-To fix this completely without requiring any API keys, sign-ups, or watermarks, we can use **Stamen / Stadia Toner** or **Esri World Street Map** / **Esri World Topo Map** which are completely free and open for applications.
-
-Here is the updated script using **Esri World Street Map**, which renders clean map tiles without watermarks or API keys:
-
-```python
-# app.py — Clustering + Batch Navigation + Skip/Mark + Clickable Image Popups
-# with Map-Click Start & Address Search (no GPS/IP needed)
-# ----------------------------------------------------------------------------
-
 import math
 import tempfile
 from html import escape
