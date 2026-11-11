@@ -203,12 +203,10 @@ for col in df.columns:
 
 df = df.rename(columns=col_mapping)
 
-# Ensure fallback columns if missing
 for req in ['ISSUE ID', 'CITY', 'ZONE', 'WARD', 'SUBCATEGORY', 'CREATED AT', 'STATUS', 'LATITUDE', 'LONGITUDE', 'BEFORE PHOTO', 'AFTER PHOTO', 'ADDRESS']:
     if req not in df.columns:
         df[req] = 'N/A'
 
-# Populate dynamic subcategories from data
 available_subcats = df['SUBCATEGORY'].dropna().unique().tolist()
 if not available_subcats:
     available_subcats = ["Pothole", "Garbage dumped on public land"]
@@ -296,7 +294,8 @@ st.caption("🗺️ Or click anywhere on the mini map to set your starting point
 center_lat = float(df['LATITUDE'].mean())
 center_lon = float(df['LONGITUDE'].mean())
 
-mini = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="OpenStreetMap")
+# Using CartoDB positron tiles to avoid 403 blocks
+mini = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="CartoDB positron")
 if st.session_state.origin_lat is not None and st.session_state.origin_lon is not None:
     folium.Marker(
         [st.session_state.origin_lat, st.session_state.origin_lon],
@@ -395,7 +394,8 @@ st.subheader("Step 6: Map")
 
 show_thumbs = st.checkbox("Show image thumbnails in popups (may slow the map)", value=False, key="cb_thumbs")
 
-m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="OpenStreetMap")
+# Using CartoDB positron tiles here as well
+m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="CartoDB positron")
 mc = MarkerCluster(name="Tickets").add_to(m)
 
 plot_df = (gdf_all.drop(columns=["geometry"]) if "geometry" in getattr(gdf_all, "columns", []) else gdf_all).copy()
