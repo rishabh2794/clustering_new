@@ -1,3 +1,7 @@
+# app.py — Clustering + Batch Navigation + Skip/Mark + Clickable Image Popups
+# with Map-Click Start & Address Search (no GPS/IP needed)
+# ----------------------------------------------------------------------------
+
 import math
 import tempfile
 from html import escape
@@ -41,7 +45,7 @@ def haversine_m(lat1, lon1, lat2, lon2):
     return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(a))
 
 def google_maps_url(origin_lat, origin_lon, dest_lat, dest_lon, mode="driving", waypoints=None):
-    base = "https://www.google.com/maps/dir/?api=1"
+    base = "[https://www.google.com/maps/dir/?api=1](https://www.google.com/maps/dir/?api=1)"
     parts = []
     if origin_lat is not None and origin_lon is not None:
         parts.append(f"origin={origin_lat},{origin_lon}")
@@ -109,7 +113,7 @@ def load_wards_uploaded(file):
 def geocode_query(q: str, timeout=6):
     """Address/place geocoder (OSM Nominatim). Returns (lat, lon) or (None, None)."""
     try:
-        url = "https://nominatim.openstreetmap.org/search"
+        url = "[https://nominatim.openstreetmap.org/search](https://nominatim.openstreetmap.org/search)"
         params = {"q": q, "format": "json", "limit": 1}
         headers = {"User-Agent": "cluster-app/1.0"}
         r = requests.get(url, params=params, headers=headers, timeout=timeout)
@@ -290,11 +294,10 @@ st.caption("🗺️ Or click anywhere on the mini map to set your starting point
 center_lat = float(df['LATITUDE'].mean())
 center_lon = float(df['LONGITUDE'].mean())
 
-# Using Esri World Street Map tiles (completely free, no API key required)
 mini = folium.Map(
     location=[center_lat, center_lon], 
     zoom_start=12, 
-    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+    tiles="[https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/](https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/){z}/{y}/{x}",
     attr="Tiles &copy; Esri"
 )
 if st.session_state.origin_lat is not None and st.session_state.origin_lon is not None:
@@ -395,11 +398,10 @@ st.subheader("Step 6: Map")
 
 show_thumbs = st.checkbox("Show image thumbnails in popups (may slow the map)", value=False, key="cb_thumbs")
 
-# Using Esri World Street Map tiles here as well
 m = folium.Map(
     location=[center_lat, center_lon], 
     zoom_start=12, 
-    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+    tiles="[https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/](https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/){z}/{y}/{x}",
     attr="Tiles &copy; Esri"
 )
 mc = MarkerCluster(name="Tickets").add_to(m)
@@ -473,5 +475,3 @@ if not clustered.empty:
 
 with open("Clustering_Application_Map.html", "rb") as f:
     st.download_button("Download Map (HTML)", f, file_name="Clustering_Application_Map.html", mime="text/html", key="dl_html")
-
-```
