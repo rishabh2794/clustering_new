@@ -294,12 +294,12 @@ st.caption("🗺️ Or click anywhere on the mini map to set your starting point
 center_lat = float(df['LATITUDE'].mean())
 center_lon = float(df['LONGITUDE'].mean())
 
-# Using standard OpenStreetMap tile server via custom URL template with proper attribution
+# Using Esri World Street Map (free, robust, no 403 blocks)
 mini = folium.Map(
     location=[center_lat, center_lon], 
     zoom_start=12, 
-    tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-    attr='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+    attr="Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, Intermap, IPC, NRCAN, Esri Japan, METI, Esri China (Hong Kong), and the GIS User Community"
 )
 if st.session_state.origin_lat is not None and st.session_state.origin_lon is not None:
     folium.Marker(
@@ -399,12 +399,11 @@ st.subheader("Step 6: Map")
 
 show_thumbs = st.checkbox("Show image thumbnails in popups (may slow the map)", value=False, key="cb_thumbs")
 
-# Using standard OpenStreetMap tiles here as well
 m = folium.Map(
     location=[center_lat, center_lon], 
     zoom_start=12, 
-    tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-    attr='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+    attr="Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, Intermap, IPC, NRCAN, Esri Japan, METI, Esri China (Hong Kong), and the GIS User Community"
 )
 mc = MarkerCluster(name="Tickets").add_to(m)
 
