@@ -1,5 +1,5 @@
 # app.py — Clustering + Batch Navigation + Skip/Mark + Clickable Image Popups
-# with Map-Click Start, Address Search, NetworkLink KML & Custom Colored MarkerClusters
+# with Map-Click Start, Address Search, NetworkLink KML & Distinct Ward/Cluster Colors
 # ----------------------------------------------------------------------------
 
 import math
@@ -360,7 +360,7 @@ if wards_gdf is not None and not wards_gdf.empty:
     folium.GeoJson(
         wards_gdf,
         name="Wards Boundary",
-        style_function=lambda x: {'fillColor': '#3388ff', 'color': '#0000ff', 'weight': 1.5, 'fillOpacity': 0.1}
+        style_function=lambda x: {'fillColor': '#999999', 'color': '#333333', 'weight': 1.5, 'fillOpacity': 0.05}
     ).add_to(mini)
 
 if st.session_state.origin_lat is not None and st.session_state.origin_lon is not None:
@@ -506,7 +506,8 @@ if wards_gdf is not None and not wards_gdf.empty:
     folium.GeoJson(
         wards_gdf,
         name="Wards Boundary",
-        style_function=lambda x: {'fillColor': '#3b75af', 'color': '#204060', 'weight': 2, 'fillOpacity': 0.15},
+        # Changed boundary outline to dark charcoal (#333333) and fill to subtle neutral gray
+        style_function=lambda x: {'fillColor': '#999999', 'color': '#333333', 'weight': 2, 'fillOpacity': 0.05},
         tooltip=folium.GeoJsonTooltip(fields=tooltip_fields) if tooltip_fields else None
     ).add_to(m)
 
