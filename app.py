@@ -35,10 +35,11 @@ except Exception:
 # ----------------- Constants -----------------
 EARTH_RADIUS_M = 6_371_000.0
 
+# Vibrant palette excluding orange and yellow shades for clusters
 CLUSTER_COLORS = [
-    '#1f77b4', '#ff7f0e', '#2ca02c', '#9467bd', '#8c564b',
-    '#e377c2', '#17becf', '#bcbd22', '#000080', '#008080',
-    '#d62728', '#ff1493', '#4b0082', '#ff8c00', '#2e8b57'
+    '#1f77b4', '#9467bd', '#2ca02c', '#17becf', '#e377c2', 
+    '#8c564b', '#000080', '#4b0082', '#2e8b57', '#008080', 
+    '#ba55d3', '#3cb371', '#4682b4', '#6a5acd', '#c71585'
 ]
 
 # ----------------- Helpers -----------------
@@ -96,7 +97,6 @@ def load_wards_uploaded(file):
         suffix = file.name.split(".")[-1].lower()
         content = file.read()
 
-        # Check if KML file is a Google My Maps NetworkLink wrapper
         if suffix == "kml":
             try:
                 root = ET.fromstring(content)
@@ -310,7 +310,7 @@ if HAVE_GPD:
 else:
     gdf_all = df.copy()
 
-# Excel summary generation (Always generated regardless of cluster count)
+# Excel summary generation
 excel_filename = "Clustering_Application_Summary.xlsx"
 export_df = gdf_all.drop(columns=["geometry"], errors="ignore")
 export_df.to_excel(excel_filename, sheet_name='Clustering Application Summary', index=False)
@@ -473,7 +473,7 @@ if wards_gdf is not None and not wards_gdf.empty:
     folium.GeoJson(
         wards_gdf,
         name="Wards Boundary",
-        style_function=lambda x: {'fillColor': '#ff7800', 'color': '#ff0000', 'weight': 2, 'fillOpacity': 0.15},
+        style_function=lambda x: {'fillColor': '#3b75af', 'color': '#204060', 'weight': 2, 'fillOpacity': 0.15},
         tooltip=folium.GeoJsonTooltip(fields=tooltip_fields) if tooltip_fields else None
     ).add_to(m)
 
@@ -498,11 +498,11 @@ for _, row in plot_df.iterrows():
     raw_cluster = row.get('CLUSTER NUMBER', -1)
     cluster_id = int(raw_cluster) if isinstance(raw_cluster, (int, float)) and not pd.isna(raw_cluster) else -1
 
-    # Priority-based color and size assignment
+    # Priority-based color assignment (Clusters use vibrant non-orange/yellow colors)
     if rid == first_in_batch:
         color, size = '#00ff00', 11        # Bright Lime Green: Next immediate stop
     elif rid in batch_ids:
-        color, size = '#ffa500', 10        # Bright Orange: Current batch of 10
+        color, size = '#00ffff', 10        # Bright Cyan: Current batch of 10
     elif rid in st.session_state.visited_ticket_ids:
         color, size = '#808080', 6         # Gray: Already visited
     elif rid in st.session_state.skipped_ticket_ids:
