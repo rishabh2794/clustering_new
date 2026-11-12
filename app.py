@@ -1,5 +1,5 @@
 # app.py — Clustering + Batch Navigation + Skip/Mark + Clickable Image Popups
-# with Map-Click Start, Address Search, NetworkLink KML & Distinct Cluster Colors
+# with Map-Click Start, Address Search, NetworkLink KML & Custom Colored MarkerClusters
 # ----------------------------------------------------------------------------
 
 import math
@@ -35,7 +35,7 @@ except Exception:
 # ----------------- Constants -----------------
 EARTH_RADIUS_M = 6_371_000.0
 
-# Vibrant palette excluding orange and yellow shades for clusters
+# Vibrant palette excluding orange and yellow shades for individual cluster points
 CLUSTER_COLORS = [
     '#1f77b4', '#9467bd', '#2ca02c', '#17becf', '#e377c2', 
     '#8c564b', '#000080', '#4b0082', '#2e8b57', '#008080', 
@@ -468,6 +468,39 @@ m = folium.Map(
     attr="Tiles &copy; Esri"
 )
 
+# --- Custom CSS to override default yellow/orange MarkerCluster bubble colors ---
+cluster_css = """
+<style>
+/* Small clusters (< 10 points) - Purple/Blue */
+.marker-cluster-small {
+    background-color: rgba(100, 100, 240, 0.6) !important;
+}
+.marker-cluster-small div {
+    background-color: rgba(60, 60, 200, 0.9) !important;
+    color: white !important;
+}
+
+/* Medium clusters (< 100 points) - Teal/Cyan */
+.marker-cluster-medium {
+    background-color: rgba(30, 180, 180, 0.6) !important;
+}
+.marker-cluster-medium div {
+    background-color: rgba(20, 140, 140, 0.9) !important;
+    color: white !important;
+}
+
+/* Large clusters (100+ points) - Deep Indigo/Navy */
+.marker-cluster-large {
+    background-color: rgba(80, 40, 160, 0.6) !important;
+}
+.marker-cluster-large div {
+    background-color: rgba(50, 20, 120, 0.9) !important;
+    color: white !important;
+}
+</style>
+"""
+m.get_root().html.add_child(folium.Element(cluster_css))
+
 if wards_gdf is not None and not wards_gdf.empty:
     tooltip_fields = [c for c in wards_gdf.columns if c != 'geometry'][:3]
     folium.GeoJson(
@@ -498,7 +531,6 @@ for _, row in plot_df.iterrows():
     raw_cluster = row.get('CLUSTER NUMBER', -1)
     cluster_id = int(raw_cluster) if isinstance(raw_cluster, (int, float)) and not pd.isna(raw_cluster) else -1
 
-    # Priority-based color assignment (Clusters use vibrant non-orange/yellow colors)
     if rid == first_in_batch:
         color, size = '#00ff00', 11        # Bright Lime Green: Next immediate stop
     elif rid in batch_ids:
@@ -509,7 +541,7 @@ for _, row in plot_df.iterrows():
         color, size = '#800080', 6         # Purple: Skipped
     elif cluster_id != -1:
         color = CLUSTER_COLORS[cluster_id % len(CLUSTER_COLORS)]
-        size = 8                           # Distinct per-cluster color
+        size = 8
     else:
         color, size = '#d9534f', 6         # Muted Red: Unclustered noise
 
