@@ -14,7 +14,6 @@ import folium
 from folium.plugins import MarkerCluster
 import numpy as np
 import pandas as pd
-from sklearn.cluster::DBSCAN
 from sklearn.cluster import DBSCAN
 import requests
 import streamlit as st
@@ -131,11 +130,7 @@ def load_wards_uploaded(file):
 
         # Parse KML XML
         root = ET.fromstring(kml_bytes)
-        # Namespace handling
-        ns = {'kml': 'http://www.opengis.net/kml/2.2'}
-        
         features = []
-        # Find all Placemarks
         placemarks = root.findall('.//{http://www.opengis.net/kml/2.2}Placemark')
         if not placemarks:
             placemarks = root.findall('.//Placemark')
@@ -146,7 +141,6 @@ def load_wards_uploaded(file):
                 name_elem = pm.find('name')
             name = name_elem.text if name_elem is not None else "Unknown"
 
-            # Check for Polygon
             polys = pm.findall('.//{http://www.opengis.net/kml/2.2}Polygon')
             if not polys:
                 polys = pm.findall('.//Polygon')
