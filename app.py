@@ -1,11 +1,12 @@
 # app.py — Clustering + Batch Navigation + Skip/Mark + Clickable Image Popups
-# with Map-Click Start, Address Search, NetworkLink KML & Custom Colored MarkerClusters
+# with Map-Click Start, Address Search, Direct KML/KMZ Parser & Custom Colored MarkerClusters
 # ----------------------------------------------------------------------------
 
 import math
 import re
 import tempfile
 import xml.etree.ElementTree as ET
+import zipfile
 from html import escape
 from urllib.parse import quote
 
@@ -13,24 +14,21 @@ import folium
 from folium.plugins import MarkerCluster
 import numpy as np
 import pandas as pd
+from sklearn.cluster::DBSCAN
 from sklearn.cluster import DBSCAN
 import requests
 import streamlit as st
 from streamlit_folium import st_folium
 from openpyxl import load_workbook
+from shapely.geometry import Polygon, MultiPolygon, LineString, MultiLineString, Point, shape
+import json
 
-# Optional heavy deps — guarded (GeoPandas/Fiona may be unavailable on Streamlit Cloud)
+# Optional heavy deps
 try:
     import geopandas as gpd
     HAVE_GPD = True
 except Exception:
     HAVE_GPD = False
-
-try:
-    import fiona
-    HAS_FIONA = True
-except Exception:
-    HAS_FIONA = False
 
 # ----------------- Constants -----------------
 EARTH_RADIUS_M = 6_371_000.0
@@ -88,8 +86,20 @@ def hyperlinkify_excel(excel_path):
     except Exception:
         pass
 
+def parse_kml_polygon_coordinates(coords_text):
+    """Parses KML coordinate string into list of (lon, lat) tuples."""
+    coords = []
+    for part in coords_text.strip().split():
+        sub = part.split(',')
+        if len(sub) >= 2:
+            try:
+                coords.append((float(sub[0]), float(sub[1])))
+            except ValueError:
+                pass
+    return coords
+
 def load_wards_uploaded(file):
-    """Ward file reader with KML guard and NetworkLink auto-fetch."""
+    """Robust KML/KMZ and GeoJSON ward parser independent of GDAL drivers."""
     if not HAVE_GPD:
         st.info("GeoPandas not available; ward overlay/join skipped.")
         return None
@@ -97,54 +107,71 @@ def load_wards_uploaded(file):
         suffix = file.name.split(".")[-1].lower()
         content = file.read()
 
-        if suffix in ("kml", "kmz"):
-            try:
-                root = ET.fromstring(content)
-                ns = {'kml': 'http://www.opengis.net/kml/2.2'}
-                link_elem = root.find('.//kml:NetworkLink/kml:Link/kml:href', ns)
-                if link_elem is None:
-                    link_elem = root.find('.//NetworkLink/Link/href')
-
-                if link_elem is not None and link_elem.text:
-                    target_url = link_elem.text.replace("&amp;", "&")
-                    if "google.com/maps/d/kml" in target_url and "forcekml=1" not in target_url:
-                        target_url += "&forcekml=1"
-
-                    st.info("Detected KML NetworkLink wrapper. Downloading full boundary dataset...")
-                    resp = requests.get(target_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-                    if resp.status_code == 200:
-                        content = resp.content
-            except Exception as net_ex:
-                st.warning(f"NetworkLink resolution attempt: {net_ex}")
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix="." + suffix) as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
-
         if suffix in ("geojson", "json"):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".geojson") as tmp:
+                tmp.write(content)
+                tmp_path = tmp.name
             gdf = gpd.read_file(tmp_path)
-        elif suffix in ("kml", "kmz"):
-            if not HAS_FIONA:
-                st.warning("KML requires Fiona/GDAL. Upload GeoJSON/JSON instead.")
-                return None
-            layers = fiona.listlayers(tmp_path)
-            gdf = None
-            for layer in layers:
-                gdf_try = gpd.read_file(tmp_path, driver="KML", layer=layer)
-                if not gdf_try.empty:
-                    gdf = gdf_try
-                    break
-            if gdf is None:
-                st.warning("No non-empty KML layers found.")
-                return None
-        else:
-            st.warning("Unsupported ward file type. Use GeoJSON/JSON/KML/KMZ.")
+            if gdf.crs is None:
+                gdf.set_crs(epsg=4326, inplace=True)
+            elif gdf.crs.to_string() != "EPSG:4326":
+                gdf = gdf.to_crs(epsg=4326)
+            return gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty]
+
+        # Handle KMZ / KML via direct XML parsing
+        kml_bytes = content
+        if suffix == "kmz":
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".kmz") as tmp_kmz:
+                tmp_kmz.write(content)
+                kmz_path = tmp_kmz.name
+            with zipfile.ZipFile(kmz_path, 'r') as z:
+                kml_filename = [name for name in z.namelist() if name.endswith('.kml')][0]
+                with z.open(kml_filename) as kml_file:
+                    kml_bytes = kml_file.read()
+
+        # Parse KML XML
+        root = ET.fromstring(kml_bytes)
+        # Namespace handling
+        ns = {'kml': 'http://www.opengis.net/kml/2.2'}
+        
+        features = []
+        # Find all Placemarks
+        placemarks = root.findall('.//{http://www.opengis.net/kml/2.2}Placemark')
+        if not placemarks:
+            placemarks = root.findall('.//Placemark')
+
+        for pm in placemarks:
+            name_elem = pm.find('{http://www.opengis.net/kml/2.2}name')
+            if name_elem is None:
+                name_elem = pm.find('name')
+            name = name_elem.text if name_elem is not None else "Unknown"
+
+            # Check for Polygon
+            polys = pm.findall('.//{http://www.opengis.net/kml/2.2}Polygon')
+            if not polys:
+                polys = pm.findall('.//Polygon')
+
+            for poly in polys:
+                outer = poly.find('.//{http://www.opengis.net/kml/2.2}outerBoundaryIs')
+                if outer is None:
+                    outer = poly.find('.//outerBoundaryIs')
+                if outer is not None:
+                    coords_elem = outer.find('.//{http://www.opengis.net/kml/2.2}coordinates')
+                    if coords_elem is None:
+                        coords_elem = outer.find('.//coordinates')
+                    if coords_elem is not None and coords_elem.text:
+                        pts = parse_kml_polygon_coordinates(coords_elem.text)
+                        if len(pts) >= 3:
+                            features.append({
+                                'geometry': Polygon(pts),
+                                'name': name
+                            })
+
+        if not features:
+            st.warning("No valid Polygon features extracted from KML/KMZ.")
             return None
 
-        if gdf.crs is None:
-            gdf.set_crs(epsg=4326, inplace=True)
-        elif gdf.crs.to_string() != "EPSG:4326":
-            gdf = gdf.to_crs(epsg=4326)
+        gdf = gpd.GeoDataFrame(features, crs="EPSG:4326")
         return gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty]
     except Exception as e:
         st.error(f"Error reading ward boundary file: {e}")
@@ -303,7 +330,7 @@ if HAVE_GPD:
     if wards_gdf is not None and not wards_gdf.empty:
         try:
             gdf_all = gpd.sjoin(gdf_all, wards_gdf, how="left", predicate="within")
-            ward_col_candidates = [c for c in ['WRD_NAME', 'WRD_NO', 'name', 'Name', 'ward', 'Ward'] if c in gdf_all.columns]
+            ward_col_candidates = [c for c in ['name', 'WRD_NAME', 'WRD_NO', 'Ward', 'ward'] if c in gdf_all.columns]
             if ward_col_candidates:
                 matched_ward = gdf_all[ward_col_candidates[0]].fillna('')
                 gdf_all['WARD'] = np.where(matched_ward != '', matched_ward, gdf_all['WARD'])
@@ -473,7 +500,6 @@ m = folium.Map(
 # --- Custom CSS to override default yellow/orange MarkerCluster bubble colors ---
 cluster_css = """
 <style>
-/* Small clusters (< 10 points) - Purple/Blue */
 .marker-cluster-small {
     background-color: rgba(100, 100, 240, 0.6) !important;
 }
@@ -481,8 +507,6 @@ cluster_css = """
     background-color: rgba(60, 60, 200, 0.9) !important;
     color: white !important;
 }
-
-/* Medium clusters (< 100 points) - Teal/Cyan */
 .marker-cluster-medium {
     background-color: rgba(30, 180, 180, 0.6) !important;
 }
@@ -490,8 +514,6 @@ cluster_css = """
     background-color: rgba(20, 140, 140, 0.9) !important;
     color: white !important;
 }
-
-/* Large clusters (100+ points) - Deep Indigo/Navy */
 .marker-cluster-large {
     background-color: rgba(80, 40, 160, 0.6) !important;
 }
