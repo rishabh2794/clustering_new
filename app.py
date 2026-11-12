@@ -1,9 +1,11 @@
 # app.py — Clustering + Batch Navigation + Skip/Mark + Clickable Image Popups
-# with Map-Click Start & Address Search (no GPS/IP needed)
+# with Map-Click Start, Address Search, NetworkLink KML & Distinct Cluster Colors
 # ----------------------------------------------------------------------------
 
 import math
+import re
 import tempfile
+import xml.etree.ElementTree as ET
 from html import escape
 from urllib.parse import quote
 
@@ -33,6 +35,12 @@ except Exception:
 # ----------------- Constants -----------------
 EARTH_RADIUS_M = 6_371_000.0
 
+CLUSTER_COLORS = [
+    '#1f77b4', '#ff7f0e', '#2ca02c', '#9467bd', '#8c564b',
+    '#e377c2', '#17becf', '#bcbd22', '#000080', '#008080',
+    '#d62728', '#ff1493', '#4b0082', '#ff8c00', '#2e8b57'
+]
+
 # ----------------- Helpers -----------------
 def normalize_subcategory(series: pd.Series):
     return series.astype(str).str.strip().str.lower()
@@ -43,6 +51,14 @@ def haversine_m(lat1, lon1, lat2, lon2):
     dlmb = math.radians(float(lon2) - float(lon1))
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlmb / 2) ** 2
     return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(a))
+
+def extract_lat_lon(val):
+    if not isinstance(val, str):
+        return None, None
+    m = re.search(r'q=(-?\d+\.\d+),\s*(-?\d+\.\d+)', val)
+    if m:
+        return float(m.group(1)), float(m.group(2))
+    return None, None
 
 def google_maps_url(origin_lat, origin_lon, dest_lat, dest_lon, mode="driving", waypoints=None):
     base = "https://www.google.com/maps/dir/?api=1"
@@ -72,19 +88,42 @@ def hyperlinkify_excel(excel_path):
         pass
 
 def load_wards_uploaded(file):
-    """Ward file reader with KML guard. Returns GeoDataFrame or None."""
+    """Ward file reader with KML guard and NetworkLink auto-fetch."""
     if not HAVE_GPD:
         st.info("GeoPandas not available; ward overlay/join skipped.")
         return None
     try:
         suffix = file.name.split(".")[-1].lower()
+        content = file.read()
+
+        # Check if KML file is a Google My Maps NetworkLink wrapper
+        if suffix == "kml":
+            try:
+                root = ET.fromstring(content)
+                ns = {'kml': 'http://www.opengis.net/kml/2.2'}
+                link_elem = root.find('.//kml:NetworkLink/kml:Link/kml:href', ns)
+                if link_elem is None:
+                    link_elem = root.find('.//NetworkLink/Link/href')
+
+                if link_elem is not None and link_elem.text:
+                    target_url = link_elem.text.replace("&amp;", "&")
+                    if "google.com/maps/d/kml" in target_url and "forcekml=1" not in target_url:
+                        target_url += "&forcekml=1"
+
+                    st.info("Detected KML NetworkLink wrapper. Downloading full boundary dataset...")
+                    resp = requests.get(target_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+                    if resp.status_code == 200:
+                        content = resp.content
+            except Exception as net_ex:
+                st.warning(f"NetworkLink resolution attempt: {net_ex}")
+
         with tempfile.NamedTemporaryFile(delete=False, suffix="." + suffix) as tmp:
-            tmp.write(file.read())
+            tmp.write(content)
             tmp_path = tmp.name
 
         if suffix in ("geojson", "json"):
             gdf = gpd.read_file(tmp_path)
-        elif suffix == "kml":
+        elif suffix in ("kml", "kmz"):
             if not HAS_FIONA:
                 st.warning("KML requires Fiona/GDAL. Upload GeoJSON/JSON instead.")
                 return None
@@ -99,7 +138,7 @@ def load_wards_uploaded(file):
                 st.warning("No non-empty KML layers found.")
                 return None
         else:
-            st.warning("Unsupported ward file type. Use GeoJSON/JSON/KML.")
+            st.warning("Unsupported ward file type. Use GeoJSON/JSON/KML/KMZ.")
             return None
 
         if gdf.crs is None:
@@ -107,7 +146,8 @@ def load_wards_uploaded(file):
         elif gdf.crs.to_string() != "EPSG:4326":
             gdf = gdf.to_crs(epsg=4326)
         return gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty]
-    except Exception:
+    except Exception as e:
+        st.error(f"Error reading ward boundary file: {e}")
         return None
 
 def geocode_query(q: str, timeout=6):
@@ -160,7 +200,7 @@ if "origin_lon" not in st.session_state:
 
 # ----------------- Inputs -----------------
 csv_file = st.file_uploader("Upload CSV", type=["csv"], key="csv_uploader_main")
-ward_file = st.file_uploader("Upload Wards file (optional)", type=["geojson", "json", "kml"], key="ward_uploader_main")
+ward_file = st.file_uploader("Upload Wards file (optional)", type=["geojson", "json", "kml", "kmz"], key="ward_uploader_main")
 
 radius_m = st.number_input("Clustering radius (m)", 1, 1000, 15, key="num_radius")
 min_samples = st.number_input("Minimum per cluster", 1, 100, 2, key="num_min_samples")
@@ -172,7 +212,7 @@ if not csv_file:
 
 df = pd.read_csv(csv_file)
 
-# --- Dynamic Column Mapping ---
+# --- Dynamic Column Mapping for Custom & Standard Formats ---
 col_mapping = {}
 for col in df.columns:
     c_lower = col.strip().lower()
@@ -192,11 +232,11 @@ for col in df.columns:
         col_mapping[col] = 'LATITUDE'
     elif c_lower in ['longitude', 'long', 'lng']:
         col_mapping[col] = 'LONGITUDE'
-    elif c_lower in ['before photo', 'raised evidence', 'photo', 'image', 'evidence']:
+    elif c_lower in ['before photo', 'raised evidence', 'photo', 'image', 'evidence', 'raised evidance']:
         col_mapping[col] = 'BEFORE PHOTO'
-    elif c_lower in ['after photo', 'closed evidence']:
+    elif c_lower in ['after photo', 'closed evidence', 'latest evidance']:
         col_mapping[col] = 'AFTER PHOTO'
-    elif c_lower in ['address', 'landmark*', 'landmark', 'location']:
+    elif c_lower in ['address', 'landmark*', 'landmark', 'location', 'raised location']:
         col_mapping[col] = 'ADDRESS'
     elif c_lower in ['created at', 'raised on', 'date']:
         col_mapping[col] = 'CREATED AT'
@@ -206,6 +246,20 @@ df = df.rename(columns=col_mapping)
 for req in ['ISSUE ID', 'CITY', 'ZONE', 'WARD', 'SUBCATEGORY', 'CREATED AT', 'STATUS', 'LATITUDE', 'LONGITUDE', 'BEFORE PHOTO', 'AFTER PHOTO', 'ADDRESS']:
     if req not in df.columns:
         df[req] = 'N/A'
+
+# --- Extract Latitude and Longitude from Google Maps URLs if standalone columns are missing/empty ---
+if df['LATITUDE'].astype(str).isin(['N/A', 'nan', 'None', '']).all():
+    if 'Raised Location' in df.columns:
+        extracted = df['Raised Location'].apply(extract_lat_lon)
+        df['LATITUDE'] = [x[0] for x in extracted]
+        df['LONGITUDE'] = [x[1] for x in extracted]
+    else:
+        for col in df.columns:
+            if df[col].astype(str).str.contains('google.com/maps', na=False).any():
+                extracted = df[col].apply(extract_lat_lon)
+                df['LATITUDE'] = [x[0] for x in extracted]
+                df['LONGITUDE'] = [x[1] for x in extracted]
+                break
 
 available_subcats = df['SUBCATEGORY'].dropna().unique().tolist()
 if not available_subcats:
@@ -247,7 +301,6 @@ if HAVE_GPD:
     if wards_gdf is not None and not wards_gdf.empty:
         try:
             gdf_all = gpd.sjoin(gdf_all, wards_gdf, how="left", predicate="within")
-            # Update WARD column from KML layer metadata if available
             ward_col_candidates = [c for c in ['WRD_NAME', 'WRD_NO', 'name', 'Name', 'ward', 'Ward'] if c in gdf_all.columns]
             if ward_col_candidates:
                 matched_ward = gdf_all[ward_col_candidates[0]].fillna('')
@@ -257,7 +310,7 @@ if HAVE_GPD:
 else:
     gdf_all = df.copy()
 
-# Excel summary generation (FIX: Generate Excel even if no clusters found)
+# Excel summary generation (Always generated regardless of cluster count)
 excel_filename = "Clustering_Application_Summary.xlsx"
 export_df = gdf_all.drop(columns=["geometry"], errors="ignore")
 export_df.to_excel(excel_filename, sheet_name='Clustering Application Summary', index=False)
@@ -290,21 +343,19 @@ with colB:
             st.success(f"Manual start set: {st.session_state.origin_lat:.6f}, {st.session_state.origin_lon:.6f}")
             st.rerun()
         except Exception:
-            st.error("Invalid coordinates. Example: 24.7938, 85.0243")
+            st.error("Invalid coordinates. Example: 25.6023, 85.1335")
 
 st.caption("🗺️ Or click anywhere on the mini map to set your starting point:")
 center_lat = float(df['LATITUDE'].mean())
 center_lon = float(df['LONGITUDE'].mean())
 
-# Using Esri World Street Map
 mini = folium.Map(
-    location=[center_lat, center_lon], 
-    zoom_start=12, 
+    location=[center_lat, center_lon],
+    zoom_start=12,
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
     attr="Tiles &copy; Esri"
 )
 
-# Render Ward Boundary on Mini Map if available
 if wards_gdf is not None and not wards_gdf.empty:
     folium.GeoJson(
         wards_gdf,
@@ -411,19 +462,19 @@ st.subheader("Step 6: Map")
 show_thumbs = st.checkbox("Show image thumbnails in popups (may slow the map)", value=False, key="cb_thumbs")
 
 m = folium.Map(
-    location=[center_lat, center_lon], 
-    zoom_start=12, 
+    location=[center_lat, center_lon],
+    zoom_start=12,
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
     attr="Tiles &copy; Esri"
 )
 
-# Render Ward Boundary Polygons on the Main Map
 if wards_gdf is not None and not wards_gdf.empty:
+    tooltip_fields = [c for c in wards_gdf.columns if c != 'geometry'][:3]
     folium.GeoJson(
         wards_gdf,
         name="Wards Boundary",
         style_function=lambda x: {'fillColor': '#ff7800', 'color': '#ff0000', 'weight': 2, 'fillOpacity': 0.15},
-        tooltip=folium.GeoJsonTooltip(fields=[c for c in wards_gdf.columns if c != 'geometry'][:3])
+        tooltip=folium.GeoJsonTooltip(fields=tooltip_fields) if tooltip_fields else None
     ).add_to(m)
 
 mc = MarkerCluster(name="Tickets").add_to(m)
@@ -434,30 +485,37 @@ batch_ids = set(batch_df['ISSUE ID'].astype(str).tolist()) if not batch_df.empty
 first_in_batch = str(batch_df.iloc[0]['ISSUE ID']) if not batch_df.empty else None
 
 if origin_lat is not None and origin_lon is not None:
-    folium.Marker([origin_lat, origin_lon], popup="Start here",
-                  icon=folium.Icon(color="green", icon="flag")).add_to(m)
+    folium.Marker(
+        [origin_lat, origin_lon],
+        popup="Start here",
+        icon=folium.Icon(color="green", icon="flag")
+    ).add_to(m)
 
 for _, row in plot_df.iterrows():
     rid = str(row['ISSUE ID'])
     lat, lon = float(row['LATITUDE']), float(row['LONGITUDE'])
 
+    raw_cluster = row.get('CLUSTER NUMBER', -1)
+    cluster_id = int(raw_cluster) if isinstance(raw_cluster, (int, float)) and not pd.isna(raw_cluster) else -1
+
+    # Priority-based color and size assignment
     if rid == first_in_batch:
-        color, size = 'green', 10
+        color, size = '#00ff00', 11        # Bright Lime Green: Next immediate stop
     elif rid in batch_ids:
-        color, size = 'orange', 9
+        color, size = '#ffa500', 10        # Bright Orange: Current batch of 10
     elif rid in st.session_state.visited_ticket_ids:
-        color, size = 'gray', 7
+        color, size = '#808080', 6         # Gray: Already visited
     elif rid in st.session_state.skipped_ticket_ids:
-        color, size = 'purple', 7
+        color, size = '#800080', 6         # Purple: Skipped
+    elif cluster_id != -1:
+        color = CLUSTER_COLORS[cluster_id % len(CLUSTER_COLORS)]
+        size = 8                           # Distinct per-cluster color
     else:
-        color, size = 'red', 7
+        color, size = '#d9534f', 6         # Muted Red: Unclustered noise
 
     before_url = str(row.get('BEFORE PHOTO', '') or '').strip()
-    after_url = str(row.get('AFTER PHOTO', '') or '').strip()
     ward = escape(str(row.get('WARD', '') or ''))
     status = escape(str(row.get('STATUS', '') or ''))
-    cluster = row.get('CLUSTER NUMBER', '')
-    cluster = int(cluster) if isinstance(cluster, (int, float)) and not pd.isna(cluster) else ''
 
     parts = [
         f"<b>Issue ID:</b> {escape(rid)}",
@@ -465,8 +523,10 @@ for _, row in plot_df.iterrows():
         f"<b>Ward:</b> {ward}",
         f"<b>Lat, Lon:</b> {lat:.6f}, {lon:.6f}",
     ]
-    if cluster != '':
-        parts.insert(0, f"<b>Cluster:</b> {cluster}")
+    if cluster_id != -1:
+        parts.insert(0, f"<b>Cluster:</b> #{cluster_id}")
+    else:
+        parts.insert(0, "<b>Cluster:</b> Unclustered (Noise)")
 
     if is_url(before_url):
         parts.append(f"<a href='{before_url}' target='_blank' rel='noopener noreferrer'>Evidence photo</a>")
@@ -479,7 +539,8 @@ for _, row in plot_df.iterrows():
     folium.CircleMarker(
         location=[lat, lon],
         radius=size,
-        color=color,
+        color='#000000' if cluster_id != -1 else color,
+        weight=1 if cluster_id != -1 else 0,
         fill=True,
         fill_color=color,
         fill_opacity=0.9,
@@ -493,7 +554,6 @@ m.save("Clustering_Application_Map.html")
 # ---------------- Step 7: Downloads ----------------
 st.subheader("Step 7: Downloads")
 
-# FIX: Excel download button is now always available
 with open("Clustering_Application_Summary.xlsx", "rb") as f:
     st.download_button("Download Excel", f, file_name="Clustering_Application_Summary.xlsx", key="dl_excel")
 
