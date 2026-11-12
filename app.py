@@ -1,5 +1,5 @@
 # app.py — Clustering + Batch Navigation + Skip/Mark + Clickable Image Popups
-# with Map-Click Start, Address Search, Direct KML/KMZ Parser & Custom Colored MarkerClusters
+# with Map-Click Start, Address Search, Robust KMZ/KML LineString & Polygon Parser
 # ----------------------------------------------------------------------------
 
 import math
@@ -19,8 +19,7 @@ import requests
 import streamlit as st
 from streamlit_folium import st_folium
 from openpyxl import load_workbook
-from shapely.geometry import Polygon, MultiPolygon, LineString, MultiLineString, Point, shape
-import json
+from shapely.geometry import Polygon, LineString
 
 # Optional heavy deps
 try:
@@ -85,7 +84,7 @@ def hyperlinkify_excel(excel_path):
     except Exception:
         pass
 
-def parse_kml_polygon_coordinates(coords_text):
+def parse_kml_coordinates(coords_text):
     """Parses KML coordinate string into list of (lon, lat) tuples."""
     coords = []
     for part in coords_text.strip().split():
@@ -98,7 +97,7 @@ def parse_kml_polygon_coordinates(coords_text):
     return coords
 
 def load_wards_uploaded(file):
-    """Robust KML/KMZ and GeoJSON ward parser independent of GDAL drivers."""
+    """Robust KML/KMZ and GeoJSON ward parser supporting both Polygons and LineStrings."""
     if not HAVE_GPD:
         st.info("GeoPandas not available; ward overlay/join skipped.")
         return None
@@ -141,10 +140,12 @@ def load_wards_uploaded(file):
                 name_elem = pm.find('name')
             name = name_elem.text if name_elem is not None else "Unknown"
 
+            # Check for Polygons
             polys = pm.findall('.//{http://www.opengis.net/kml/2.2}Polygon')
             if not polys:
                 polys = pm.findall('.//Polygon')
 
+            polygon_added = False
             for poly in polys:
                 outer = poly.find('.//{http://www.opengis.net/kml/2.2}outerBoundaryIs')
                 if outer is None:
@@ -154,15 +155,32 @@ def load_wards_uploaded(file):
                     if coords_elem is None:
                         coords_elem = outer.find('.//coordinates')
                     if coords_elem is not None and coords_elem.text:
-                        pts = parse_kml_polygon_coordinates(coords_elem.text)
+                        pts = parse_kml_coordinates(coords_elem.text)
                         if len(pts) >= 3:
-                            features.append({
-                                'geometry': Polygon(pts),
-                                'name': name
-                            })
+                            features.append({'geometry': Polygon(pts), 'name': name})
+                            polygon_added = True
+
+            # If no polygon found, check for LineStrings (polylines)
+            if not polygon_added:
+                linestrings = pm.findall('.//{http://www.opengis.net/kml/2.2}LineString')
+                if not linestrings:
+                    linestrings = pm.findall('.//LineString')
+
+                for ls in linestrings:
+                    coords_elem = ls.find('.//{http://www.opengis.net/kml/2.2}coordinates')
+                    if coords_elem is None:
+                        coords_elem = ls.find('.//coordinates')
+                    if coords_elem is not None and coords_elem.text:
+                        pts = parse_kml_coordinates(coords_elem.text)
+                        if len(pts) >= 3:
+                            # If closed loop, make Polygon, else LineString
+                            if pts[0] == pts[-1]:
+                                features.append({'geometry': Polygon(pts), 'name': name})
+                            else:
+                                features.append({'geometry': LineString(pts), 'name': name})
 
         if not features:
-            st.warning("No valid Polygon features extracted from KML/KMZ.")
+            st.warning("No valid geometry features extracted from KML/KMZ.")
             return None
 
         gdf = gpd.GeoDataFrame(features, crs="EPSG:4326")
