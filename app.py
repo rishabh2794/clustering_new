@@ -97,7 +97,7 @@ def load_wards_uploaded(file):
         suffix = file.name.split(".")[-1].lower()
         content = file.read()
 
-        if suffix == "kml":
+        if suffix in ("kml", "kmz"):
             try:
                 root = ET.fromstring(content)
                 ns = {'kml': 'http://www.opengis.net/kml/2.2'}
@@ -402,4 +402,194 @@ if pool.empty:
     batch_df = pd.DataFrame(columns=['ISSUE ID', 'WARD', 'STATUS', 'LATITUDE', 'LONGITUDE'])
 else:
     if origin_lat is None or origin_lon is None:
-        seed_lat, seed_lon = float(pool['LATITUDE'].mean()), float(pool['
+        seed_lat, seed_lon = float(pool['LATITUDE'].mean()), float(pool['LONGITUDE'].mean())
+    else:
+        seed_lat, seed_lon = origin_lat, origin_lon
+
+    long_seq_rows = build_nearest_neighbor_sequence(pool, seed_lat, seed_lon, limit=min(200, len(pool)))
+    seq_df = pd.DataFrame(long_seq_rows)
+
+    if st.session_state.batch_cursor >= len(seq_df):
+        st.session_state.batch_cursor = 0
+
+    start = st.session_state.batch_cursor
+    end = min(start + 10, len(seq_df))
+    batch_df = seq_df.iloc[start:end].copy()
+
+    if batch_df.empty and not seq_df.empty:
+        st.session_state.batch_cursor = 0
+        start, end = 0, min(10, len(seq_df))
+        batch_df = seq_df.iloc[start:end].copy()
+
+    batch_df_display = batch_df[['ISSUE ID', 'WARD', 'SUBCATEGORY', 'LATITUDE', 'LONGITUDE']].reset_index(drop=True)
+    batch_df_display.index = batch_df_display.index + 1
+    st.dataframe(batch_df_display, use_container_width=True)
+
+    if not batch_df.empty:
+        waypoints = [(float(r['LATITUDE']), float(r['LONGITUDE'])) for _, r in batch_df.iterrows()]
+        last = waypoints[-1]
+        mids = waypoints[:-1] if len(waypoints) > 1 else []
+        nav_url = google_maps_url(origin_lat, origin_lon, last[0], last[1], waypoints=mids)
+        st.markdown(f"[🧭 Open route in Google Maps for this batch]({nav_url})")
+
+    c1, c2, c3, c4 = st.columns(4)
+    first_id = str(batch_df.iloc[0]['ISSUE ID']) if not batch_df.empty else None
+
+    with c1:
+        if st.button("✅ Mark first as Visited", key="btn_mark_first"):
+            if first_id:
+                st.session_state.visited_ticket_ids.add(first_id)
+                st.rerun()
+
+    with c2:
+        if st.button("⏭️ Skip first", key="btn_skip_first"):
+            if first_id:
+                st.session_state.skipped_ticket_ids.add(first_id)
+                st.rerun()
+
+    with c3:
+        if st.button("✅ Mark entire batch as Visited", key="btn_mark_batch"):
+            for _id in batch_df['ISSUE ID'].astype(str).tolist():
+                st.session_state.visited_ticket_ids.add(_id)
+            st.rerun()
+
+    with c4:
+        if st.button("➡️ Next batch", key="btn_next_batch"):
+            st.session_state.batch_cursor = end if end < len(seq_df) else 0
+            st.rerun()
+
+# ---------------- Step 6: Map ----------------
+st.subheader("Step 6: Map")
+
+show_thumbs = st.checkbox("Show image thumbnails in popups (may slow the map)", value=False, key="cb_thumbs")
+
+m = folium.Map(
+    location=[center_lat, center_lon],
+    zoom_start=12,
+    tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+    attr="Tiles &copy; Esri"
+)
+
+# --- Custom CSS to override default yellow/orange MarkerCluster bubble colors ---
+cluster_css = """
+<style>
+/* Small clusters (< 10 points) - Purple/Blue */
+.marker-cluster-small {
+    background-color: rgba(100, 100, 240, 0.6) !important;
+}
+.marker-cluster-small div {
+    background-color: rgba(60, 60, 200, 0.9) !important;
+    color: white !important;
+}
+
+/* Medium clusters (< 100 points) - Teal/Cyan */
+.marker-cluster-medium {
+    background-color: rgba(30, 180, 180, 0.6) !important;
+}
+.marker-cluster-medium div {
+    background-color: rgba(20, 140, 140, 0.9) !important;
+    color: white !important;
+}
+
+/* Large clusters (100+ points) - Deep Indigo/Navy */
+.marker-cluster-large {
+    background-color: rgba(80, 40, 160, 0.6) !important;
+}
+.marker-cluster-large div {
+    background-color: rgba(50, 20, 120, 0.9) !important;
+    color: white !important;
+}
+</style>
+"""
+m.get_root().html.add_child(folium.Element(cluster_css))
+
+if wards_gdf is not None and not wards_gdf.empty:
+    tooltip_fields = [c for c in wards_gdf.columns if c != 'geometry'][:3]
+    folium.GeoJson(
+        wards_gdf,
+        name="Wards Boundary",
+        style_function=lambda x: {'fillColor': '#999999', 'color': '#333333', 'weight': 2, 'fillOpacity': 0.05},
+        tooltip=folium.GeoJsonTooltip(fields=tooltip_fields) if tooltip_fields else None
+    ).add_to(m)
+
+mc = MarkerCluster(name="Tickets").add_to(m)
+
+plot_df = (gdf_all.drop(columns=["geometry"], errors="ignore")).copy()
+
+batch_ids = set(batch_df['ISSUE ID'].astype(str).tolist()) if not batch_df.empty else set()
+first_in_batch = str(batch_df.iloc[0]['ISSUE ID']) if not batch_df.empty else None
+
+if origin_lat is not None and origin_lon is not None:
+    folium.Marker(
+        [origin_lat, origin_lon],
+        popup="Start here",
+        icon=folium.Icon(color="green", icon="flag")
+    ).add_to(m)
+
+for _, row in plot_df.iterrows():
+    rid = str(row['ISSUE ID'])
+    lat, lon = float(row['LATITUDE']), float(row['LONGITUDE'])
+
+    raw_cluster = row.get('CLUSTER NUMBER', -1)
+    cluster_id = int(raw_cluster) if isinstance(raw_cluster, (int, float)) and not pd.isna(raw_cluster) else -1
+
+    if rid == first_in_batch:
+        color, size = '#00ff00', 11        # Bright Lime Green: Next immediate stop
+    elif rid in batch_ids:
+        color, size = '#00ffff', 10        # Bright Cyan: Current batch of 10
+    elif rid in st.session_state.visited_ticket_ids:
+        color, size = '#808080', 6         # Gray: Already visited
+    elif rid in st.session_state.skipped_ticket_ids:
+        color, size = '#800080', 6         # Purple: Skipped
+    elif cluster_id != -1:
+        color = CLUSTER_COLORS[cluster_id % len(CLUSTER_COLORS)]
+        size = 8
+    else:
+        color, size = '#d9534f', 6         # Muted Red: Unclustered noise
+
+    before_url = str(row.get('BEFORE PHOTO', '') or '').strip()
+    ward = escape(str(row.get('WARD', '') or ''))
+    subcat = escape(str(row.get('SUBCATEGORY', '') or ''))
+
+    parts = [
+        f"<b>Issue ID:</b> {escape(rid)}",
+        f"<b>Subcategory:</b> {subcat}",
+        f"<b>Ward:</b> {ward}",
+        f"<b>Lat, Lon:</b> {lat:.6f}, {lon:.6f}",
+    ]
+    if cluster_id != -1:
+        parts.insert(0, f"<b>Cluster:</b> #{cluster_id}")
+    else:
+        parts.insert(0, "<b>Cluster:</b> Unclustered (Noise)")
+
+    if is_url(before_url):
+        parts.append(f"<a href='{before_url}' target='_blank' rel='noopener noreferrer'>Evidence photo</a>")
+        if show_thumbs:
+            parts.append(f"<div><img src='{before_url}' loading='lazy' referrerpolicy='no-referrer' style='max-width:220px;border:1px solid #ccc;border-radius:6px;'/></div>")
+
+    popup_html = "<div style='font-size:13px;line-height:1.25'>" + "<br>".join(parts) + "</div>"
+    popup = folium.Popup(popup_html, max_width=280)
+
+    folium.CircleMarker(
+        location=[lat, lon],
+        radius=size,
+        color='#000000' if cluster_id != -1 else color,
+        weight=1 if cluster_id != -1 else 0,
+        fill=True,
+        fill_color=color,
+        fill_opacity=0.9,
+        popup=popup
+    ).add_to(mc)
+
+folium.LayerControl().add_to(m)
+st_folium(m, width="100%", height=500, key="main_map_render")
+m.save("Clustering_Application_Map.html")
+
+# ---------------- Step 7: Downloads ----------------
+st.subheader("Step 7: Downloads")
+
+with open("Clustering_Application_Summary.xlsx", "rb") as f:
+    st.download_button("Download Excel", f, file_name="Clustering_Application_Summary.xlsx", key="dl_excel")
+
+with open("Clustering_Application_Map.html", "rb") as f:
+    st.download_button("Download Map (HTML)", f, file_name="Clustering_Application_Map.html", mime="text/html", key="dl_html")
